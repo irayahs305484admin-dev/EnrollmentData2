@@ -5,8 +5,6 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Enrollment Dashboard</title>
   <script src="https://cdn.tailwindcss.com"></script>
-  <!-- Include Chart.js for data visualization -->
-  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
   <style>
     /* Loading spinner animation */
     .loader {
@@ -27,19 +25,8 @@
     <!-- Loading Screen -->
     <div id="loading" class="flex flex-col items-center justify-center min-h-[60vh]">
       <div class="loader rounded-full border-4 border-t-4 border-gray-200 h-16 w-16 mb-4"></div>
-      <h2 class="text-xl font-bold text-gray-700" id="loading-text">Connecting to Firebase...</h2>
-      <p class="text-gray-500 mt-2" id="loading-subtext">Initializing database connection</p>
-    </div>
-
-    <!-- Error/Setup Screen -->
-    <div id="setup-screen" class="hidden flex flex-col items-center justify-center min-h-[60vh]">
-      <div class="bg-white p-8 rounded-xl shadow-md max-w-lg w-full text-center border border-gray-200">
-        <h2 class="text-2xl font-bold text-gray-800 mb-4" id="setup-title">No Data Found</h2>
-        <p class="text-gray-600 mb-6" id="setup-message">Your Firestore database is connected, but the "enrollment_data" collection is empty.</p>
-        <button id="seed-btn" class="bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-6 rounded-lg transition-colors w-full">
-          Generate Sample Data
-        </button>
-      </div>
+      <h2 class="text-xl font-bold text-gray-700">Loading Dashboard...</h2>
+      <p id="loading-text" class="text-gray-500 mt-2">Fetching data...</p>
     </div>
 
     <!-- Main Content Area (Hidden initially) -->
@@ -62,13 +49,12 @@
     </div>
   </div>
 
+  <!-- Use type="module" to import modern Firebase Web SDKs via CDN -->
   <script type="module">
-    // Import Firebase SDKs
-    import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-    import { getFirestore, collection, getDocs, doc, setDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
-    import { getAuth, signInAnonymously } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/10.11.0/firebase-app.js";
+    import { getFirestore, doc, setDoc, getDoc } from "https://www.gstatic.com/firebasejs/10.11.0/firebase-firestore.js";
 
-    // Your Firebase Configuration
+    // Your provided Firebase Configuration
     const firebaseConfig = {
       apiKey: "AIzaSyCLHq70jY6Nd5ZEKo4tIcQmJnlcrzpFk80",
       authDomain: "enrollment2-e44f6.firebaseapp.com",
@@ -78,87 +64,153 @@
       appId: "1:608494168365:web:3a438360e3213735cc0ba4"
     };
 
-    // Initialize Firebase
+    // Initialize Firebase and Firestore
     const app = initializeApp(firebaseConfig);
     const db = getFirestore(app);
-    const auth = getAuth(app);
 
-    // Global variables for dashboard state
-    window.dashboardData = [];
-    window.activeSheetIndex = 0;
-    let chartInstances = []; // Keep track of charts to destroy them on re-render
+    let dashboardData = [];
+    let activeSheetIndex = 0;
 
-    // Main initialization function
-    async function initApp() {
+    // Initialize the app when the window loads
+    window.onload = async function() {
+      const loadingText = document.getElementById('loading-text');
+
+      // 1. Check if running inside Google Apps Script deployment
+      if (typeof google !== 'undefined' && google.script) {
+        loadingText.innerText = "Fetching data via Google Apps Script...";
+        
+        google.script.run
+          .withSuccessHandler(async function(data) {
+            dashboardData = data;
+            initDashboard();
+            
+            // Backup/Sync this fresh data to Firestore
+            try {
+              await setDoc(doc(db, "enrollment_data", "dashboard"), { sheets: data });
+              console.log("Data successfully synced to Firestore.");
+            } catch (error) {
+              console.warn("Could not sync to Firestore (check database rules):", error);
+            }
+          })
+          .withFailureHandler(async function(error) {
+             console.warn("GAS fetch failed, falling back to Firestore...", error);
+             await loadFromFirestore();
+          })
+          .getDashboardData();
+      } 
+      // 2. If not in GAS (e.g., deployed to Firebase Hosting), use Firestore / Direct Fetch
+      else {
+        loadingText.innerText = "Connecting to Firebase Database...";
+        await loadFromFirestore();
+      }
+    };
+
+    // Function to load data directly from Firestore
+    async function loadFromFirestore() {
       try {
-        updateLoadingState("Authenticating...", "Connecting securely to Firestore");
-        await signInAnonymously(auth);
+        const docRef = doc(db, "enrollment_data", "dashboard");
+        const docSnap = await getDoc(docRef);
         
-        updateLoadingState("Fetching Data...", "Retrieving dashboard data from Firestore");
-        await loadDashboardData();
-        
-      } catch (error) {
-        showError("Firebase Connection Error", error.message);
+        if (docSnap.exists()) {
+          console.log("Data loaded from Firestore.");
+          dashboardData = docSnap.data().sheets;
+          initDashboard();
+        } else {
+          console.log("No data in Firestore. Fetching directly from Google Sheet link...");
+          await loadFromGoogleSheetURL();
+        }
+      } catch (e) {
+        console.warn("Failed to load from Firestore. Attempting direct Sheet fetch...", e);
+        await loadFromGoogleSheetURL();
       }
     }
 
-    // Load data from Firestore
-    async function loadDashboardData() {
+    // Function to fetch directly from the provided Google Sheet link (Failsafe mode)
+    async function loadFromGoogleSheetURL() {
+      document.getElementById('loading-text').innerText = "Fetching directly from Google Sheets API...";
       try {
-        const querySnapshot = await getDocs(collection(db, "enrollment_data"));
+        const sheetId = '1fy-YIJ0JqkdLxsl8ZHsHjEsXbYlpSbHng0j_1vt-jR4';
+        const gid = '1217663629';
+        // Using the Google Visualization endpoint for direct JSON access
+        const url = `https://docs.google.com/spreadsheets/d/${sheetId}/gviz/tq?tqx=out:json&gid=${gid}`;
         
-        if (querySnapshot.empty) {
-          showSetupScreen();
-          return;
+        const response = await fetch(url);
+        let text = await response.text();
+        
+        // Extract JSON from Google's response wrapper
+        const start = text.indexOf('{');
+        const end = text.lastIndexOf('}');
+        if (start === -1 || end === -1) throw new Error("Invalid response format from Google Sheets");
+        
+        text = text.substring(start, end + 1);
+        const json = JSON.parse(text);
+        
+        const values = [];
+        // Map headers
+        const headers = json.table.cols.map(col => col.label || "");
+        values.push(headers);
+        
+        // Map rows
+        json.table.rows.forEach(row => {
+          const rowData = row.c.map(cell => cell ? (cell.f || cell.v || "") : "");
+          values.push(rowData);
+        });
+        
+        dashboardData = [{
+          name: "Enrollment Data (Direct)",
+          values: values,
+          charts: [] // Direct client-side fetch doesn't export chart images
+        }];
+        
+        initDashboard();
+        
+        // Save this to Firestore for faster loads next time
+        try {
+          await setDoc(doc(db, "enrollment_data", "dashboard"), { sheets: dashboardData });
+        } catch (dbError) {
+          console.warn("Skipped Firestore saving:", dbError);
         }
 
-        window.dashboardData = [];
-        querySnapshot.forEach((doc) => {
-          const data = doc.data();
-          window.dashboardData.push({
-            id: doc.id,
-            name: data.name || doc.id,
-            values: data.values || [],
-            order: data.order || 0
-          });
-        });
-
-        // Sort tabs by the 'order' field
-        window.dashboardData.sort((a, b) => a.order - b.order);
-
-        renderDashboard();
-      } catch (error) {
-        showError("Error loading data", error.message + " (Check your Firestore security rules)");
+      } catch(e) {
+         document.getElementById('loading').innerHTML = `
+          <div class="bg-red-50 border-l-4 border-red-500 p-4 rounded max-w-lg mx-auto shadow">
+            <div class="flex">
+              <div class="ml-3">
+                <p class="text-sm text-red-700 font-bold">Failed to load from all sources.</p>
+                <p class="text-sm text-red-600 mt-1">${e.message}</p>
+              </div>
+            </div>
+          </div>`;
       }
     }
 
-    // Render the main dashboard UI
-    function renderDashboard() {
+    function initDashboard() {
+      if (!dashboardData || dashboardData.length === 0) {
+        document.getElementById('loading').innerHTML = `<p class="text-gray-500 font-medium">No data found in the database or spreadsheet.</p>`;
+        return;
+      }
       document.getElementById('loading').style.display = 'none';
-      document.getElementById('setup-screen').classList.add('hidden');
       document.getElementById('content').classList.remove('hidden');
-      
       renderTabs();
-      renderSheet(window.activeSheetIndex);
+      renderSheet(0);
     }
 
-    // Render navigation tabs
     function renderTabs() {
       const tabsContainer = document.getElementById('tabs');
       tabsContainer.innerHTML = '';
       
-      window.dashboardData.forEach((sheet, index) => {
+      dashboardData.forEach((sheet, index) => {
         const btn = document.createElement('button');
         btn.innerText = sheet.name;
         
-        if (index === window.activeSheetIndex) {
+        if (index === activeSheetIndex) {
           btn.className = 'px-5 py-2.5 rounded-lg font-semibold text-white bg-blue-600 shadow-md transform scale-105 transition-all';
         } else {
           btn.className = 'px-5 py-2.5 rounded-lg font-medium text-gray-700 bg-gray-200 hover:bg-gray-300 transition-all';
         }
         
         btn.onclick = () => {
-          window.activeSheetIndex = index;
+          activeSheetIndex = index;
           renderTabs(); 
           renderSheet(index);
         };
@@ -166,16 +218,10 @@
       });
     }
 
-    // Render table and charts for the active sheet
     function renderSheet(index) {
-      const sheet = window.dashboardData[index];
+      const sheet = dashboardData[index];
       const container = document.getElementById('sheet-content');
-      
-      // Cleanup previous charts to prevent memory leaks
-      chartInstances.forEach(chart => chart.destroy());
-      chartInstances = [];
-
-      container.innerHTML = `<h2 class="text-2xl font-bold mb-6 text-gray-800 border-b-2 border-gray-100 pb-3">${sheet.name} Data</h2>`;
+      container.innerHTML = `<h2 class="text-2xl font-bold mb-6 text-gray-800 border-b-2 border-gray-100 pb-3">${sheet.name}</h2>`;
 
       // 1. Render Table
       if (sheet.values && sheet.values.length > 0) {
@@ -187,15 +233,14 @@
 
         let isFirstRow = true;
 
-        sheet.values.forEach((row) => {
-          if (row.every(cell => !cell || !cell.toString().trim())) return;
+        sheet.values.forEach((row, rowIndex) => {
+          if (row.every(cell => !cell.toString().trim())) return;
 
           const tr = document.createElement('tr');
           
           row.forEach(cell => {
             const cellTag = isFirstRow ? 'th' : 'td'; 
             const cellEl = document.createElement(cellTag);
-            
             cellEl.innerText = cell;
             
             if (isFirstRow) {
@@ -204,7 +249,7 @@
               cellEl.className = 'px-2 py-2 sm:px-4 sm:py-3 border-b border-gray-100 text-center font-medium break-words whitespace-normal';
             }
             
-            if (cell && cell.toString().toLowerCase() === 'total') {
+            if (cell.toString().toLowerCase() === 'total') {
               cellEl.classList.add('font-bold', 'text-blue-700');
             }
 
@@ -217,192 +262,36 @@
 
         tableWrapper.appendChild(table);
         container.appendChild(tableWrapper);
-        
-        // 2. Generate dynamic charts based on tabular data
-        generateChartsFromData(sheet, container);
-        
       } else {
         container.innerHTML += `<p class="text-gray-500 italic mb-6">No tabular data found in this sheet.</p>`;
       }
-    }
 
-    // Automatically generates simple charts by analyzing the table structure
-    function generateChartsFromData(sheet, container) {
-      if (!sheet.values || sheet.values.length < 2) return;
-      
-      const headers = sheet.values[0];
-      const rows = sheet.values.slice(1);
-      
-      // Filter out 'Total' rows for charting
-      const dataRows = rows.filter(row => row[0] && row[0].toString().toLowerCase() !== 'total');
-      
-      if (dataRows.length === 0 || headers.length < 2) return;
+      // 2. Render Charts 
+      if (sheet.charts && sheet.charts.length > 0) {
+        const chartsTitle = document.createElement('h3');
+        chartsTitle.className = 'text-2xl font-bold mb-6 mt-10 text-gray-800 border-b-2 border-gray-100 pb-2';
+        chartsTitle.innerText = 'Visualizations';
+        container.appendChild(chartsTitle);
 
-      const chartsTitle = document.createElement('h3');
-      chartsTitle.className = 'text-2xl font-bold mb-6 mt-10 text-gray-800 border-b-2 border-gray-100 pb-2';
-      chartsTitle.innerText = 'Visualizations';
-      container.appendChild(chartsTitle);
+        const chartsContainer = document.createElement('div');
+        chartsContainer.className = 'flex flex-col gap-10 mt-6 items-center w-full';
 
-      const chartsContainer = document.createElement('div');
-      chartsContainer.className = 'grid grid-cols-1 lg:grid-cols-2 gap-8 mt-6 items-center w-full';
-
-      // Assume Column 0 is Labels (e.g., "Grade 7", "Section A")
-      const labels = dataRows.map(row => row[0]);
-
-      // Create a chart for each numeric column
-      for (let i = 1; i < headers.length; i++) {
-        // Skip total columns to prevent skewed charts
-        if (headers[i].toLowerCase() === 'total') continue;
-        
-        // Parse data, default to 0 if not a valid number
-        const dataset = dataRows.map(row => parseFloat(row[i]) || 0);
-
-        const chartWrapper = document.createElement('div');
-        chartWrapper.className = 'w-full p-4 bg-white rounded-xl shadow-md border border-gray-200';
-        
-        const canvas = document.createElement('canvas');
-        chartWrapper.appendChild(canvas);
-        chartsContainer.appendChild(chartWrapper);
-
-        // Define colors based on column index for variety
-        const colors = [
-          'rgba(59, 130, 246, 0.7)', // Blue
-          'rgba(16, 185, 129, 0.7)', // Green
-          'rgba(245, 158, 11, 0.7)', // Yellow
-          'rgba(239, 68, 68, 0.7)'   // Red
-        ];
-        const borderColor = [
-          'rgb(59, 130, 246)',
-          'rgb(16, 185, 129)',
-          'rgb(245, 158, 11)',
-          'rgb(239, 68, 68)'
-        ];
-
-        const colorIndex = (i - 1) % colors.length;
-
-        const chart = new Chart(canvas, {
-          type: 'bar',
-          data: {
-            labels: labels,
-            datasets: [{
-              label: headers[i],
-              data: dataset,
-              backgroundColor: colors[colorIndex],
-              borderColor: borderColor[colorIndex],
-              borderWidth: 1,
-              borderRadius: 4
-            }]
-          },
-          options: {
-            responsive: true,
-            plugins: {
-              legend: { position: 'top' },
-              title: { display: true, text: `${headers[i]} Distribution` }
-            },
-            scales: {
-              y: { beginAtZero: true }
-            }
-          }
+        sheet.charts.forEach(chartBase64 => {
+          const imgWrapper = document.createElement('div');
+          imgWrapper.className = 'w-full flex justify-center p-4 bg-white rounded-xl shadow-md border border-gray-200 hover:shadow-xl transition-shadow';
+          
+          const img = document.createElement('img');
+          img.src = chartBase64;
+          img.className = 'w-full max-w-5xl h-auto rounded-lg object-contain';
+          img.alt = `Chart for ${sheet.name}`;
+          
+          imgWrapper.appendChild(img);
+          chartsContainer.appendChild(imgWrapper);
         });
-        chartInstances.push(chart);
+
+        container.appendChild(chartsContainer);
       }
-      container.appendChild(chartsContainer);
     }
-
-
-    // --- UTILITY & SETUP FUNCTIONS ---
-
-    function updateLoadingState(title, subtext) {
-      document.getElementById('loading').style.display = 'flex';
-      document.getElementById('setup-screen').classList.add('hidden');
-      document.getElementById('loading-text').innerText = title;
-      document.getElementById('loading-subtext').innerText = subtext;
-    }
-
-    function showSetupScreen() {
-      document.getElementById('loading').style.display = 'none';
-      document.getElementById('setup-screen').classList.remove('hidden');
-    }
-
-    function showError(title, message) {
-      document.getElementById('loading').style.display = 'none';
-      document.getElementById('setup-screen').classList.add('hidden');
-      
-      const appDiv = document.getElementById('app');
-      const errorHtml = `
-        <div class="bg-red-50 border-l-4 border-red-500 p-6 rounded-lg shadow-sm max-w-2xl mx-auto mt-10">
-          <div class="flex items-center">
-            <svg class="h-6 w-6 text-red-500 mr-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/>
-            </svg>
-            <h3 class="text-lg font-bold text-red-800">${title}</h3>
-          </div>
-          <p class="text-red-700 mt-2 font-mono text-sm">${message}</p>
-          <p class="text-red-600 mt-4 text-sm font-semibold">Ensure your Firestore Security Rules allow read/write access for anonymous users during setup.</p>
-        </div>
-      `;
-      appDiv.insertAdjacentHTML('afterbegin', errorHtml);
-    }
-
-    // Seed dummy data into Firestore
-    document.getElementById('seed-btn').addEventListener('click', async () => {
-      const btn = document.getElementById('seed-btn');
-      btn.innerText = "Writing to database...";
-      btn.disabled = true;
-      btn.classList.add('opacity-75', 'cursor-not-allowed');
-
-      const sampleData = [
-        {
-          id: "overall_enrollment",
-          name: "Overall Enrollment",
-          order: 1,
-          values: [
-            ["Grade Level", "Male", "Female", "Total"],
-            ["Grade 7", "120", "135", "255"],
-            ["Grade 8", "115", "140", "255"],
-            ["Grade 9", "130", "125", "255"],
-            ["Grade 10", "110", "115", "225"],
-            ["Total", "475", "515", "990"]
-          ]
-        },
-        {
-          id: "strand_breakdown",
-          name: "SHS Strands",
-          order: 2,
-          values: [
-            ["Strand", "Students", "Target Quota"],
-            ["STEM", "150", "200"],
-            ["ABM", "120", "150"],
-            ["HUMSS", "180", "150"],
-            ["GAS", "90", "100"],
-            ["Total", "540", "600"]
-          ]
-        }
-      ];
-
-      try {
-        for (const sheet of sampleData) {
-          await setDoc(doc(db, "enrollment_data", sheet.id), {
-            name: sheet.name,
-            order: sheet.order,
-            values: sheet.values
-          });
-        }
-        
-        btn.innerText = "Success! Reloading...";
-        setTimeout(() => {
-          loadDashboardData();
-        }, 1000);
-      } catch (error) {
-        showError("Failed to seed database", error.message);
-        btn.innerText = "Generate Sample Data";
-        btn.disabled = false;
-        btn.classList.remove('opacity-75', 'cursor-not-allowed');
-      }
-    });
-
-    // Start App on load
-    window.addEventListener('DOMContentLoaded', initApp);
   </script>
 </body>
 </html>
