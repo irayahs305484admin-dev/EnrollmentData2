@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Enrollment Dashboard</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    /* Loading spinner animation */
+    .loader {
+      border-top-color: #3b82f6;
+      animation: spinner 1s linear infinite;
+    }
+    @keyframes spinner {
+      0% { transform: rotate(0deg); }
+      100% { transform: rotate(360deg); }
+    }
+    /* Simple table styling for merged-like appearance */
+    tr:nth-child(even) { background-color: #f9fafb; }
+  </style>
+</head>
+<body class="bg-gray-100 font-sans text-gray-800 min-h-screen">
+  <div id="app" class="max-w-7xl mx-auto p-4 sm:p-6 lg:p-8">
+    
+    <!-- Loading Screen -->
+    <div id="loading" class="flex flex-col items-center justify-center min-h-[60vh]">
+      <div class="loader rounded-full border-4 border-t-4 border-gray-200 h-16 w-16 mb-4"></div>
+      <h2 class="text-xl font-bold text-gray-700">Loading Dashboard...</h2>
+      <p class="text-gray-500 mt-2">Fetching data and charts from Google Sheets</p>
+    </div>
+
+    <!-- Main Content Area (Hidden initially) -->
+    <div id="content" class="hidden">
+      <header class="mb-8">
+        <h1 class="text-3xl md:text-4xl font-extrabold text-center text-blue-900 mb-6 drop-shadow-sm">
+          Enrollment Dashboard
+        </h1>
+        
+        <!-- Navigation Buttons -->
+        <div id="tabs" class="flex flex-wrap justify-center gap-3">
+          <!-- Buttons will be injected here via JavaScript -->
+        </div>
+      </header>
+
+      <!-- Sheet Data Container -->
+      <main id="sheet-content" class="bg-white shadow-xl rounded-xl p-6 md:p-8">
+        <!-- Table and Charts will be injected here -->
+      </main>
+    </div>
+  </div>
+
+  <script>
+    let dashboardData = [];
+    let activeSheetIndex = 0;
+
+    // Initialize the app when the window loads
+    window.onload = function() {
+      // Call the Google Apps Script backend function
+      if (typeof google !== 'undefined' && google.script) {
+        google.script.run
+          .withSuccessHandler(function(data) {
+            dashboardData = data;
+            initDashboard();
+          })
+          .withFailureHandler(function(error) {
+            document.getElementById('loading').innerHTML = `
+              <div class="bg-red-50 border-l-4 border-red-500 p-4 rounded max-w-lg mx-auto">
+                <div class="flex">
+                  <div class="ml-3">
+                    <p class="text-sm text-red-700 font-bold">Error loading data:</p>
+                    <p class="text-sm text-red-600 mt-1">${error.message}</p>
+                  </div>
+                </div>
+              </div>`;
+          })
+          .getDashboardData();
+      } else {
+         document.getElementById('loading').innerHTML = `<p class="text-red-500 font-bold">Error: Google Apps Script API not found. You must run this inside a Google Apps Script deployment.</p>`;
+      }
+    };
+
+    function initDashboard() {
+      if (!dashboardData || dashboardData.length === 0) {
+        document.getElementById('loading').innerHTML = `<p class="text-gray-500">No data found in the spreadsheet.</p>`;
+        return;
+      }
+      document.getElementById('loading').style.display = 'none';
+      document.getElementById('content').classList.remove('hidden');
+      renderTabs();
+      renderSheet(0); // Render the first sheet by default
+    }
+
+    // Creates the navigation buttons
+    function renderTabs() {
+      const tabsContainer = document.getElementById('tabs');
+      tabsContainer.innerHTML = '';
+      
+      dashboardData.forEach((sheet, index) => {
+        const btn = document.createElement('button');
+        btn.innerText = sheet.name;
+        
+        // Active vs Inactive tab styling
+        if (index === activeSheetIndex) {
+          btn.className = 'px-5 py-2.5 rounded-lg font-semibold text-white bg-blue-600 shadow-md transform scale-105 transition-all';
+        } else {
+          btn.className = 'px-5 py-2.5 rounded-lg font-medium text-gray-700 bg-gray-200 hover:bg-gray-300 transition-all';
+        }
+        
+        btn.onclick = () => {
+          activeSheetIndex = index;
+          renderTabs(); 
+          renderSheet(index);
+        };
+        tabsContainer.appendChild(btn);
+      });
+    }
+
+    // Renders the table and charts for the selected sheet
+    function renderSheet(index) {
+      const sheet = dashboardData[index];
+      const container = document.getElementById('sheet-content');
+      container.innerHTML = `<h2 class="text-2xl font-bold mb-6 text-gray-800 border-b-2 border-gray-100 pb-3">${sheet.name} Data</h2>`;
+
+      // 1. Render Table
+      if (sheet.values && sheet.values.length > 0) {
+        const tableWrapper = document.createElement('div');
+        // Added w-full to ensure it respects parent width constraints
+        tableWrapper.className = 'overflow-x-auto w-full mb-10 shadow-sm rounded-lg border border-gray-200';
+
+        const table = document.createElement('table');
+        // Removed whitespace-nowrap, changed min-w-full to w-full, added responsive text sizing
+        table.className = 'w-full text-xs sm:text-sm text-left';
+
+        let isFirstRow = true;
+
+        sheet.values.forEach((row, rowIndex) => {
+          // Skip entirely empty rows
+          if (row.every(cell => !cell.trim())) return;
+
+          const tr = document.createElement('tr');
+          
+          row.forEach(cell => {
+            // Assume the first non-empty row contains headers
+            const cellTag = isFirstRow ? 'th' : 'td'; 
+            const cellEl = document.createElement(cellTag);
+            
+            cellEl.innerText = cell;
+            
+            if (isFirstRow) {
+              // Added word-wrap and responsive padding
+              cellEl.className = 'px-2 py-2 sm:px-4 sm:py-3 bg-blue-50 text-blue-900 font-bold border-b border-gray-200 uppercase tracking-wider text-center break-words';
+            } else {
+              // Added word-wrap and responsive padding
+              cellEl.className = 'px-2 py-2 sm:px-4 sm:py-3 border-b border-gray-100 text-center font-medium break-words whitespace-normal';
+            }
+            
+            // Highlight specific elements like "Total"
+            if (cell.toLowerCase() === 'total') {
+              cellEl.classList.add('font-bold', 'text-blue-700');
+            }
+
+            tr.appendChild(cellEl);
+          });
+          
+          table.appendChild(tr);
+          isFirstRow = false; // Next rows are standard data
+        });
+
+        tableWrapper.appendChild(table);
+        container.appendChild(tableWrapper);
+      } else {
+        container.innerHTML += `<p class="text-gray-500 italic mb-6">No tabular data found in this sheet.</p>`;
+      }
+
+      // 2. Render Charts (Images generated by GAS)
+      if (sheet.charts && sheet.charts.length > 0) {
+        const chartsTitle = document.createElement('h3');
+        chartsTitle.className = 'text-2xl font-bold mb-6 mt-10 text-gray-800 border-b-2 border-gray-100 pb-2';
+        chartsTitle.innerText = 'Visualizations';
+        container.appendChild(chartsTitle);
+
+        const chartsContainer = document.createElement('div');
+        chartsContainer.className = 'flex flex-col gap-10 mt-6 items-center w-full';
+
+        sheet.charts.forEach(chartBase64 => {
+          const imgWrapper = document.createElement('div');
+          imgWrapper.className = 'w-full flex justify-center p-4 bg-white rounded-xl shadow-md border border-gray-200 hover:shadow-xl transition-shadow';
+          
+          const img = document.createElement('img');
+          img.src = chartBase64;
+          img.className = 'w-full max-w-5xl h-auto rounded-lg object-contain';
+          img.alt = `Chart for ${sheet.name}`;
+          
+          imgWrapper.appendChild(img);
+          chartsContainer.appendChild(imgWrapper);
+        });
+
+        container.appendChild(chartsContainer);
+      }
+    }
+  </script>
+</body>
+</html>
